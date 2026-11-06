@@ -42,26 +42,17 @@ constexpr int SEGMENT_ELEMENTS = 2 * COARSE_FACTOR * BLOCK_THREADS;
 // -----------------------------------------------------------------------------
 __global__ void exercise3_rightAlignedSum(float* input, float* output) {
     unsigned int tid = threadIdx.x;
-    unsigned int B = blockDim.x;
 
-    for (unsigned int stride = B; stride >= 1; stride /= 2) {
+    for (unsigned int stride = blockDim.x; stride >= 1; stride /= 2) {
         if (tid < stride) {
-            // TODO 3a: Determine destination and source positions.
-            // Hint: At stride=B, destinations are [B, 2*B).
-            //       At stride=B/2, destinations are [3*B/2, 2*B).
-            //       At the last iteration, only position 2*B-1 remains.
-            // unsigned int destination = ???;
-            // unsigned int source      = ???;
-
-            // TODO 3b: Update the destination using the source.
-            // input[destination] += input[source];
+            input[2 * blockDim.x - 1 - tid] += input[2 * blockDim.x - 1 - tid - stride];
         }
         // All threads must reach this barrier, even if they skipped the addition.
         __syncthreads();
     }
 
     if (tid == 0) {
-        output[0] = input[2 * B - 1];
+        output[0] = input[2 * blockDim.x - 1];
     }
 }
 
@@ -80,26 +71,24 @@ __global__ void exercise4_coarsenedMax(const float* input, float* output) {
     unsigned int i = segment + tid;
 
     // Important: negative-only inputs must still work.
-    float partialMax = -CUDART_INF_F;
+    float partialMax = input[i];
 
-    for (unsigned int c = 0; c < 2 * COARSE_FACTOR; ++c) {
-        // TODO 4a: Read the c-th element assigned to this thread.
-        // See Figure 10.20 for the access pattern.
-        // TODO 4b: Update partialMax with fmaxf(...).
-        // float value = input[???];
-        // partialMax = ???;
+    for (unsigned int c = 1; c < 2 * COARSE_FACTOR; ++c) {
+        partialMax = fmaxf(partialMax, input[i + c * blockDim.x]);
     }
 
     partial[tid] = partialMax;
-    __syncthreads();
-
+ 
+    // Now we have a block sized shared memory to reduce from
+    // We can choose different algorithms like TwoStageWarpLevelSumReduction (split it to warps and do reductions warp level) or 
+    // Fig 10.10 (the simplest version of a block reduction, no warp operations)
     // Reduce the per-thread maxima to one maximum per block.
     for (unsigned int stride = blockDim.x / 2; stride > 0; stride /= 2) {
-        if (tid < stride) {
-            // TODO 4c: Replace the sum operation with a max operation.
-            // partial[tid] = ???;
-        }
         __syncthreads();
+        if (threadIdx.x < stride)
+        {
+            partial[tid] = fmaxf(partial[tid], partial[tid + stride]);
+        }
     }
 
     if (tid == 0) {
@@ -124,9 +113,10 @@ __global__ void exercise5_coarsenedSumAnyN(const float* input,
     unsigned int i = segment + tid;
 
     // Zero is the identity for addition. Some threads may have no valid data.
-    float partialSum = 0.0f;
+    float partialSum = i < N ? input[i] : 0.0f;
 
-    for (unsigned int c = 0; c < 2 * COARSE_FACTOR; ++c) {
+    for (unsigned int c = 1; c < 2 * COARSE_FACTOR; ++c) {
+        partialSum += (i + c * blockDim.x < N) ? input[i + c * blockDim.x] : 0.0f;
         // TODO 5a: Compute this thread's global input index for pass c.
         // unsigned int index = ???;
         // TODO 5b: Only load/accumulate input[index] when index < N.
@@ -134,15 +124,13 @@ __global__ void exercise5_coarsenedSumAnyN(const float* input,
     }
 
     partial[tid] = partialSum;
-    __syncthreads();
 
     // Finish with a block-wide reduction in shared memory.
     for (unsigned int stride = blockDim.x / 2; stride > 0; stride /= 2) {
-        if (tid < stride) {
-            // TODO 5c: Add the upper half into the lower half.
-            // partial[tid] += ???;
-        }
         __syncthreads();
+        if (tid < stride) {
+            partial[tid] += partial[tid + stride];
+        }
     }
 
     if (tid == 0) {
