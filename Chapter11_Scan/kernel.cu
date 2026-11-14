@@ -53,39 +53,71 @@ constexpr int E7_THREADS = 256;  // Power of two for the Brent-Kung exercise.
 // You decide on an appropriate shared-memory layout and how to
 // vectorize FULL tiles while correctly handling the last partial tile.
 //
-// The extra shared-memory capacity leaves room for an alternative layout.
-// Do not assume the textbook's original contiguous accesses have bank
-// conflicts: identify an actual conflict pattern before changing layout.
+// I chose thread coarsened + vectorized load/store so this is good for less threads firing (really small hardware lol)
 __global__ void ex4_vectorizedKoggeStone(const float* input, float* output,
     int N) {
-    __shared__ float sharedData[E4_TILE + E4_TILE / 32 + 32];
-
     const int tid = static_cast<int>(threadIdx.x);
     const int tileStart = static_cast<int>(blockIdx.x) * E4_TILE;
     const int threadStart = tileStart + tid * E4_VALUES_PER_THREAD;
     float items[E4_VALUES_PER_THREAD] = { 0.0f };
 
-    (void)sharedData;
-    (void)threadStart;
-    (void)items;
-    (void)input;
-    (void)output;
-    (void)N;
-
     // TODO 4.1: Load this thread's four consecutive elements.
     //           Use a vector load on valid full tiles; handle tail elements.
+    if (threadStart + E4_VALUES_PER_THREAD - 1 < N)
+    {
+        // When profiling, must check if this generates a vectorized load in ptx!!!
+        memcpy(items, input + threadStart, sizeof(float4));
+    }
+    else
+    {
+        for (int i = 0; i < E4_VALUES_PER_THREAD; i++)
+        {
+            const int idx = threadStart + i;
+            if (idx < N)
+            {
+                items[i] = input[idx];
+            }
+        }
+    }
 
-    // TODO 4.2: Write values into shared memory using YOUR layout.
-    //           Keep the logical input order intact.
+    #pragma unroll
+    for (int i = 0; i < E4_VALUES_PER_THREAD - 1; i++)
+    {
+        items[i + 1] += items[i];
+    }
+
+    float threadSum = items[3];
+    threadSum = blockScan(threadSum);
+
+    __shared__ float threadSums[E4_THREADS];
+    threadSums[tid] = threadSum;
     __syncthreads();
 
-    // TODO 4.3: Perform a Kogge-Stone INCLUSIVE scan over the tile.
-    //           Synchronize where necessary. The tile is zero-padded
-    //           logically when the input ends partway through a tile.
-    __syncthreads();
+    // Add previous thread's partial sums
+    float prevPartialSum = (threadIdx.x > 0) ? threadSums[threadIdx.x - 1] : 0.0f;
+    #pragma unroll
+    for (int i = 0; i < 4; i++)
+    {
+        items[i] += prevPartialSum;
+    }
 
-    // TODO 4.4: Write the four scan results for this thread to output.
-    //           Use vector stores where valid and handle the tail safely.
+    // Write output
+    if (threadStart + E4_VALUES_PER_THREAD - 1 < N)
+    {
+        // Check if vectorized
+        memcpy(output + threadStart, items, sizeof(float4));
+    }
+    else
+    {
+        for (int i = 0; i < E4_VALUES_PER_THREAD; i++)
+        {
+            const int idx = threadStart + i;
+            if (idx < N)
+            {
+                output[idx] = items[i];
+            }
+        }
+    }
 }
 
 // ============================================================
