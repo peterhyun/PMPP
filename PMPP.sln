@@ -7,6 +7,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Chapter07_Convolution", "Ch
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Chapter10_Reduction", "Chapter10_Reduction\Chapter10_Reduction.vcxproj", "{3B2CF739-2A45-42C0-AC16-45412C35913F}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Chapter11_Scan", "Chapter11_Scan\Chapter11_Scan.vcxproj", "{3A924C05-46C1-423B-A747-B03D84AB36A1}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -21,6 +23,10 @@ Global
 		{3B2CF739-2A45-42C0-AC16-45412C35913F}.Debug|x64.Build.0 = Debug|x64
 		{3B2CF739-2A45-42C0-AC16-45412C35913F}.Release|x64.ActiveCfg = Release|x64
 		{3B2CF739-2A45-42C0-AC16-45412C35913F}.Release|x64.Build.0 = Release|x64
+		{3A924C05-46C1-423B-A747-B03D84AB36A1}.Debug|x64.ActiveCfg = Debug|x64
+		{3A924C05-46C1-423B-A747-B03D84AB36A1}.Debug|x64.Build.0 = Debug|x64
+		{3A924C05-46C1-423B-A747-B03D84AB36A1}.Release|x64.ActiveCfg = Release|x64
+		{3A924C05-46C1-423B-A747-B03D84AB36A1}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -1,0 +1,404 @@
+﻿// PMPP Chapter 11 — CUDA coding exercises 4, 5, and 7
+// ------------------------------------------------------------
+// Visual Studio CUDA project (CUDA Toolkit 12.3+, C++17)
+//
+// This is an EXERCISE SKELETON, not a completed solution.
+// Complete the TODOs in the GPU kernels yourself. The host-side
+// setup, launches, CPU references, and correctness checks are done.
+//
+// Run with command-line argument:  7   (default), 4, 5, or all
+// Recommended order: Exercise 7 -> Exercise 4 -> Exercise 5
+//
+// Important distinction:
+//   Ex 4, 7: each block scans its OWN segment (prefix resets per block).
+//   Ex 5:    the scan spans the ENTIRE input (no reset between blocks).
+//
+// Expected until TODOs are completed: FAILED tests are normal.
+
+#include <cuda_runtime.h>
+#include <cub/cub.cuh>
+#include <cuda/atomic>  // For the acquire/release flag protocol you'll write in Ex 5
+
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <iomanip>
+#include <iostream>
+#include <random>
+#include <string>
+#include <vector>
+
+#define CUDA_CHECK(call)                                                       \
+    do {                                                                       \
+        cudaError_t error_ = (call);                                           \
+        if (error_ != cudaSuccess) {                                           \
+            std::cerr << "CUDA error: " << cudaGetErrorString(error_)          \
+                      << " at " << __FILE__ << ':' << __LINE__ << '\n';       \
+            std::exit(EXIT_FAILURE);                                          \
+        }                                                                      \
+    } while (false)
+
+constexpr int E4_THREADS = 128;
+constexpr int E4_VALUES_PER_THREAD = 4;
+constexpr int E4_TILE = E4_THREADS * E4_VALUES_PER_THREAD;
+
+constexpr int E5_THREADS = 256;
+constexpr int E7_THREADS = 256;  // Power of two for the Brent-Kung exercise.
+
+// ============================================================
+// EXERCISE 4: Vectorized Kogge-Stone per-block inclusive scan
+// Reference: textbook Figure 11.3
+// ============================================================
+// 4 floats per thread, so each 128-thread block owns 512 floats.
+// You decide on an appropriate shared-memory layout and how to
+// vectorize FULL tiles while correctly handling the last partial tile.
+//
+// The extra shared-memory capacity leaves room for an alternative layout.
+// Do not assume the textbook's original contiguous accesses have bank
+// conflicts: identify an actual conflict pattern before changing layout.
+__global__ void ex4_vectorizedKoggeStone(const float* input, float* output,
+    int N) {
+    __shared__ float sharedData[E4_TILE + E4_TILE / 32 + 32];
+
+    const int tid = static_cast<int>(threadIdx.x);
+    const int tileStart = static_cast<int>(blockIdx.x) * E4_TILE;
+    const int threadStart = tileStart + tid * E4_VALUES_PER_THREAD;
+    float items[E4_VALUES_PER_THREAD] = { 0.0f };
+
+    (void)sharedData;
+    (void)threadStart;
+    (void)items;
+    (void)input;
+    (void)output;
+    (void)N;
+
+    // TODO 4.1: Load this thread's four consecutive elements.
+    //           Use a vector load on valid full tiles; handle tail elements.
+
+    // TODO 4.2: Write values into shared memory using YOUR layout.
+    //           Keep the logical input order intact.
+    __syncthreads();
+
+    // TODO 4.3: Perform a Kogge-Stone INCLUSIVE scan over the tile.
+    //           Synchronize where necessary. The tile is zero-padded
+    //           logically when the input ends partway through a tile.
+    __syncthreads();
+
+    // TODO 4.4: Write the four scan results for this thread to output.
+    //           Use vector stores where valid and handle the tail safely.
+}
+
+// ============================================================
+// EXERCISE 5: Decoupled look-back for device-wide inclusive scan
+// References: textbook Figures 11.17 and 11.18
+// ============================================================
+// To isolate the actual task in Exercise 5, CUB handles the *local*
+// per-block scan. You must implement ONLY the cross-block look-back.
+// This differs from Figure 11.18's locally coarsened scan, but has
+// the same inter-block data flow for the exercise.
+//
+// Use two ready states, plus the initial state:
+//   EMPTY           : this block has not published useful data.
+//   AGGREGATE_READY : its local aggregate is published.
+//   PREFIX_READY    : its inclusive block prefix is published.
+//
+// flags[] is initialized to EMPTY by the host. Each new launch must
+// reset the flags and the counter before the scan kernel starts.
+enum BlockStatus : unsigned int {
+    EMPTY = 0u,
+    AGGREGATE_READY = 1u,
+    PREFIX_READY = 2u
+};
+
+// Return the EXCLUSIVE prefix of all blocks before 'bid'.
+// 'blockAggregate' is the sum of THIS block's elements.
+__device__ float ex5_interBlockScanDecoupled(
+    float blockAggregate,
+    unsigned int bid,
+    float* blockAggregates,
+    float* blockInclusivePrefixes,
+    unsigned int* flags) {
+
+    (void)blockAggregate;
+    (void)bid;
+    (void)blockAggregates;
+    (void)blockInclusivePrefixes;
+    (void)flags;
+
+    // TODO 5.1: Publish this block's aggregate and its state safely.
+    // TODO 5.2: Look backward through preceding blocks. Use any
+    //           published complete prefix to stop the look-back;
+    //           otherwise accumulate available block aggregates.
+    // TODO 5.3: Publish this block's inclusive prefix and final state.
+    // TODO 5.4: Use appropriate device-scope acquire/release ordering.
+    //           Ensure progress without assuming CUDA blockIdx.x is
+    //           the execution order. The kernel uses dynamic bid below.
+
+    return 0.0f; // PLACEHOLDER, not the exercise solution
+}
+
+__global__ void ex5_deviceWideScan(const float* input, float* output,
+    int N,
+    unsigned int* blockCounter,
+    float* blockAggregates,
+    float* blockInclusivePrefixes,
+    unsigned int* flags) {
+    using BlockScan = cub::BlockScan<float, E5_THREADS>;
+    __shared__ BlockScan::TempStorage tempStorage;
+    __shared__ unsigned int bid_s;
+    __shared__ float exclusiveBlockPrefix_s;
+
+    const unsigned int tid = threadIdx.x;
+
+    // Assign logical block IDs in the order blocks arrive at the counter.
+    // (Unlike blockIdx.x, this helps prevent waiting on unscheduled blocks.)
+    if (tid == 0) {
+        bid_s = atomicAdd(blockCounter, 1u);
+    }
+    __syncthreads();
+
+    const unsigned int bid = bid_s;
+    const int i = static_cast<int>(bid) * E5_THREADS + static_cast<int>(tid);
+    const float value = (i < N) ? input[i] : 0.0f;
+
+    float localInclusivePrefix = 0.0f;
+    float blockAggregate = 0.0f;
+    BlockScan(tempStorage).InclusiveSum(value, localInclusivePrefix,
+        blockAggregate);
+
+    // All local inclusive prefixes are ready. One leader calculates
+    // the prefix contributed by preceding logical blocks.
+    if (tid == 0) {
+        exclusiveBlockPrefix_s = ex5_interBlockScanDecoupled(
+            blockAggregate, bid, blockAggregates,
+            blockInclusivePrefixes, flags);
+    }
+    __syncthreads();
+
+    if (i < N) {
+        output[i] = localInclusivePrefix + exclusiveBlockPrefix_s;
+    }
+}
+
+// ============================================================
+// EXERCISE 7: Brent-Kung per-block inclusive scan
+// Reference: textbook Figure 11.19
+// ============================================================
+// One element per thread. Incomplete final blocks load zeros.
+// Implement the tree stages without changing the provided CPU/host code.
+__global__ void ex7_brentKung(const float* input, float* output, int N) {
+    __shared__ float sharedData[E7_THREADS];
+
+    const int tid = static_cast<int>(threadIdx.x);
+    const int i = static_cast<int>(blockIdx.x) * E7_THREADS + tid;
+
+    sharedData[tid] = (i < N) ? input[i] : 0.0f;
+    __syncthreads();
+
+    // TODO 7.1: Implement the Brent-Kung reduction (up-sweep) tree.
+    //           Decide which thread participates at each stride.
+    //           Add the necessary block-wide synchronization.
+    for (int stride = 1; stride < blockDim.x ; stride *= 2)
+    {
+        if ((tid + 1) % (stride * 2) == 0)
+        {
+            sharedData[tid] += sharedData[tid - stride];
+        }
+    }
+
+    // TODO 7.2: Implement the reverse (down-sweep) tree for an
+    //           INCLUSIVE scan (not an exclusive scan).
+    //           Add the necessary block-wide synchronization.
+    __syncthreads();
+
+    if (i < N) {
+        output[i] = sharedData[tid];
+    }
+}
+
+// ============================================================
+// CPU REFERENCES AND TEST HARNESS — DO NOT NEED TO EDIT
+// ============================================================
+enum class Exercise { Ex4, Ex5, Ex7 };
+
+int tileSize(Exercise ex) {
+    if (ex == Exercise::Ex4) return E4_TILE;
+    if (ex == Exercise::Ex7) return E7_THREADS;
+    return 0; // Ex 5 is a whole-array scan.
+}
+
+const char* exerciseName(Exercise ex) {
+    switch (ex) {
+    case Exercise::Ex4: return "Exercise 4 (vectorized Kogge-Stone)";
+    case Exercise::Ex5: return "Exercise 5 (decoupled look-back)";
+    case Exercise::Ex7: return "Exercise 7 (Brent-Kung)";
+    }
+    return "Unknown exercise";
+}
+
+// Host inclusive scan; resets after each tile for Ex 4/7.
+// Uses integer-valued floats so these correctness tests are not
+// obscured by floating-point re-association/round-off issues.
+std::vector<float> cpuReference(const std::vector<float>& input,
+    Exercise ex) {
+    std::vector<float> expected(input.size(), 0.0f);
+    const int tile = tileSize(ex);
+    float running = 0.0f;
+    for (size_t i = 0; i < input.size(); ++i) {
+        if (tile != 0 && (i % static_cast<size_t>(tile) == 0)) {
+            running = 0.0f;
+        }
+        running += input[i];
+        expected[i] = running;
+    }
+    return expected;
+}
+
+std::vector<float> makeInput(int N) {
+    if (N == 8) {
+        return { 4.0f, 6.0f, 7.0f, 1.0f,
+                2.0f, 8.0f, 5.0f, 2.0f };
+    }
+    // Fixed seed -> reproducible test cases. Includes negatives and zeros.
+    std::mt19937 rng(11000u + static_cast<unsigned int>(N));
+    std::uniform_int_distribution<int> dist(-5, 5);
+    std::vector<float> x(static_cast<size_t>(N));
+    for (float& v : x) v = static_cast<float>(dist(rng));
+    return x;
+}
+
+bool compareAndPrint(const std::vector<float>& got,
+    const std::vector<float>& expected,
+    Exercise ex, int N) {
+    int failures = 0;
+    for (int i = 0; i < N; ++i) {
+        const float actual = got[static_cast<size_t>(i)];
+        const float wanted = expected[static_cast<size_t>(i)];
+        if (!std::isfinite(actual) || std::fabs(actual - wanted) > 0.001f) {
+            if (failures < 4) {
+                std::cout << "    mismatch at i=" << i
+                    << ": GPU=" << actual << " CPU=" << wanted << '\n';
+            }
+            ++failures;
+        }
+    }
+    std::cout << "  " << (failures == 0 ? "PASS" : "FAIL")
+        << "  N=" << std::setw(5) << N;
+    if (failures) std::cout << "  (" << failures << " mismatches)";
+    std::cout << '\n';
+    return failures == 0;
+}
+
+bool runOne(Exercise ex, int N) {
+    const std::vector<float> input = makeInput(N);
+    const std::vector<float> expected = cpuReference(input, ex);
+    std::vector<float> result(static_cast<size_t>(N));
+    const size_t bytes = static_cast<size_t>(N) * sizeof(float);
+
+    float* dInput = nullptr;
+    float* dOutput = nullptr;
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dInput), bytes));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dOutput), bytes));
+    CUDA_CHECK(cudaMemcpy(dInput, input.data(), bytes, cudaMemcpyHostToDevice));
+    // Recognizable unwritten output. No false PASS from stale GPU memory.
+    CUDA_CHECK(cudaMemset(dOutput, 0xFF, bytes));
+
+    if (ex == Exercise::Ex4) {
+        const int blocks = (N + E4_TILE - 1) / E4_TILE;
+        ex4_vectorizedKoggeStone << <blocks, E4_THREADS >> > (dInput, dOutput, N);
+    }
+    else if (ex == Exercise::Ex7) {
+        const int blocks = (N + E7_THREADS - 1) / E7_THREADS;
+        ex7_brentKung << <blocks, E7_THREADS >> > (dInput, dOutput, N);
+    }
+    else {
+        const int blocks = (N + E5_THREADS - 1) / E5_THREADS;
+        const size_t blockBytes = static_cast<size_t>(blocks) * sizeof(float);
+        const size_t flagBytes = static_cast<size_t>(blocks) * sizeof(unsigned int);
+
+        unsigned int* dBlockCounter = nullptr;
+        float* dBlockAggregates = nullptr;
+        float* dBlockInclusivePrefixes = nullptr;
+        unsigned int* dFlags = nullptr;
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dBlockCounter),
+            sizeof(unsigned int)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dBlockAggregates),
+            blockBytes));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dBlockInclusivePrefixes),
+            blockBytes));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dFlags), flagBytes));
+        CUDA_CHECK(cudaMemset(dBlockCounter, 0, sizeof(unsigned int)));
+        CUDA_CHECK(cudaMemset(dBlockAggregates, 0, blockBytes));
+        CUDA_CHECK(cudaMemset(dBlockInclusivePrefixes, 0, blockBytes));
+        CUDA_CHECK(cudaMemset(dFlags, 0, flagBytes));
+
+        ex5_deviceWideScan << <blocks, E5_THREADS >> > (
+            dInput, dOutput, N, dBlockCounter,
+            dBlockAggregates, dBlockInclusivePrefixes, dFlags);
+
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_CHECK(cudaFree(dFlags));
+        CUDA_CHECK(cudaFree(dBlockInclusivePrefixes));
+        CUDA_CHECK(cudaFree(dBlockAggregates));
+        CUDA_CHECK(cudaFree(dBlockCounter));
+    }
+
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaMemcpy(result.data(), dOutput, bytes,
+        cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaFree(dInput));
+    CUDA_CHECK(cudaFree(dOutput));
+
+    return compareAndPrint(result, expected, ex, N);
+}
+
+bool runExercise(Exercise ex) {
+    std::cout << "\n" << exerciseName(ex) << '\n';
+
+    // Checks the book's sample, warp boundaries, tile boundaries,
+    // incomplete last tiles, and multiple blocks.
+    const std::vector<int> sizes = {
+        1, 8, 31, 32, 33, 127, 128, 129,
+        255, 256, 257, 511, 512, 513, 1024, 1031, 2049
+    };
+
+    bool allPassed = true;
+    for (int N : sizes) {
+        const bool passed = runOne(ex, N);
+        allPassed = passed && allPassed;
+    }
+    std::cout << (allPassed ? "ALL TESTS PASS\n"
+        : "SOME TESTS FAIL (expected before completing TODOs)\n");
+    return allPassed;
+}
+
+int main(int argc, char** argv) {
+    const std::string selection = (argc >= 2) ? argv[1] : "7";
+    if (selection != "4" && selection != "5" &&
+        selection != "7" && selection != "all") {
+        std::cerr << "Usage: PMPP_Ch11_Exercises_4_5_7_Skeleton.exe"
+            " [4|5|7|all]\n";
+        return EXIT_FAILURE;
+    }
+
+    int deviceCount = 0;
+    CUDA_CHECK(cudaGetDeviceCount(&deviceCount));
+    if (deviceCount == 0) {
+        std::cerr << "No CUDA-capable GPU found.\n";
+        return EXIT_FAILURE;
+    }
+
+    bool ok = true;
+    if (selection == "4" || selection == "all") {
+        ok = runExercise(Exercise::Ex4) && ok;
+    }
+    if (selection == "5" || selection == "all") {
+        ok = runExercise(Exercise::Ex5) && ok;
+    }
+    if (selection == "7" || selection == "all") {
+        ok = runExercise(Exercise::Ex7) && ok;
+    }
+    return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+}
