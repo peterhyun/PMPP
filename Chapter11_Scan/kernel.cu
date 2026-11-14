@@ -198,18 +198,43 @@ __global__ void ex7_brentKung(const float* input, float* output, int N) {
     // TODO 7.1: Implement the Brent-Kung reduction (up-sweep) tree.
     //           Decide which thread participates at each stride.
     //           Add the necessary block-wide synchronization.
-    for (int stride = 1; stride < blockDim.x ; stride *= 2)
+    int stride = 1;
+    for (; stride < blockDim.x ; stride *= 2)
     {
         if ((tid + 1) % (stride * 2) == 0)
         {
             sharedData[tid] += sharedData[tid - stride];
         }
+
+        __syncthreads(); // This has to run every iteration!!!
     }
 
+    // stride == blockDim.x now, which is why we do / 4 later.
+    // 
     // TODO 7.2: Implement the reverse (down-sweep) tree for an
     //           INCLUSIVE scan (not an exclusive scan).
     //           Add the necessary block-wide synchronization.
-    __syncthreads();
+
+    // For the equation source = (k + 1) * 2s - 1 where s is stride, k = 0, 1, 2, ... ,
+    // tid can be used as 1. the source idx, or 2. the k itself
+    // Code below is used as source idx but commented the k itself approach too
+    for (stride /= 4; stride >= 1 ; stride /= 2)
+    {
+        // Approach 1
+        if (((tid + 1) % (2 * stride) == 0) && (tid + stride) < E7_THREADS)
+        {
+            sharedData[tid + stride] += sharedData[tid];
+        }
+
+        /* // Approach 2
+        int source = (tid + 1) * 2 * stride - 1;
+        if (source + stride < E7_THREADS)
+        {
+            sharedData[source + stride] += sharedData[source];
+        }
+        */
+        __syncthreads();
+    }
 
     if (i < N) {
         output[i] = sharedData[tid];
