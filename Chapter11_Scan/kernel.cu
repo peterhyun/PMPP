@@ -87,10 +87,16 @@ __global__ void ex4_vectorizedKoggeStone(const float* input, float* output,
     }
 
     float threadSum = items[3];
-    threadSum = blockScan(threadSum);
+    using BlockScan = cub::BlockScan<float, E4_THREADS>;
+    __shared__ BlockScan::TempStorage tempStorage;
+    //threadSum = blockScan(threadSum);
+
+    float localInclusivePrefix = 0.0f;
+    BlockScan(tempStorage).InclusiveSum(threadSum, localInclusivePrefix);
 
     __shared__ float threadSums[E4_THREADS];
-    threadSums[tid] = threadSum;
+    //threadSums[tid] = threadSum;
+    threadSums[tid] = localInclusivePrefix;
     __syncthreads();
 
     // Add previous thread's partial sums
@@ -150,23 +156,61 @@ __device__ float ex5_interBlockScanDecoupled(
     float* blockAggregates,
     float* blockInclusivePrefixes,
     unsigned int* flags) {
+    // shared mem as all the threads in the block need to see this value, despite one leader thread of block is doing the update
+    float prevBlockInclusivePrefix;
 
-    (void)blockAggregate;
-    (void)bid;
-    (void)blockAggregates;
-    (void)blockInclusivePrefixes;
-    (void)flags;
+    // We can public blockAggregate info immediately
+    blockAggregates[bid] = blockAggregate;
+    cuda::atomic_ref<unsigned int, cuda::thread_scope_device> myBlockFlag_ref(flags[bid]);
+    myBlockFlag_ref.store(BlockStatus::AGGREGATE_READY, cuda::memory_order_release);
 
-    // TODO 5.1: Publish this block's aggregate and its state safely.
-    // TODO 5.2: Look backward through preceding blocks. Use any
-    //           published complete prefix to stop the look-back;
-    //           otherwise accumulate available block aggregates.
-    // TODO 5.3: Publish this block's inclusive prefix and final state.
-    // TODO 5.4: Use appropriate device-scope acquire/release ordering.
-    //           Ensure progress without assuming CUDA blockIdx.x is
-    //           the execution order. The kernel uses dynamic bid below.
+    if (bid > 0)
+    {
+        unsigned int prevBlockFlag = BlockStatus::EMPTY;
+        {
+            cuda::atomic_ref<unsigned int, cuda::thread_scope_device> prevBlockFlag_ref(flags[bid - 1]);
+            do
+            {
+                prevBlockFlag = prevBlockFlag_ref.load(cuda::memory_order_acquire);
+            } while (prevBlockFlag == BlockStatus::EMPTY);
+        }
+        if (prevBlockFlag == BlockStatus::PREFIX_READY)
+        {
+            prevBlockInclusivePrefix = blockInclusivePrefixes[bid - 1];
+        }
+        else if (prevBlockFlag == BlockStatus::AGGREGATE_READY)
+        {
+            prevBlockInclusivePrefix = blockAggregates[bid - 1];
+            // Keep going back multiple blocks until it finds a block that has prefix_ready, so you can add them
+            for (int bidIter = static_cast<int>(bid) - 2; bidIter >= 0; bidIter--)
+            {
+                cuda::atomic_ref<unsigned int, cuda::thread_scope_device> prevBlockFlag_ref(flags[bidIter]);
+                do
+                {
+                    prevBlockFlag = prevBlockFlag_ref.load(cuda::memory_order_acquire);
+                }
+                while (prevBlockFlag == BlockStatus::EMPTY);
+                if (prevBlockFlag == BlockStatus::PREFIX_READY)
+                {
+                    prevBlockInclusivePrefix += blockInclusivePrefixes[bidIter];
+                    break;
+                }
+                else if (prevBlockFlag == BlockStatus::AGGREGATE_READY)
+                {
+                    prevBlockInclusivePrefix += blockAggregates[bidIter];
+                }
+            }
+        }
+    }
+    else
+    {
+        prevBlockInclusivePrefix = 0.0f;
+    }
 
-    return 0.0f; // PLACEHOLDER, not the exercise solution
+    blockInclusivePrefixes[bid] = prevBlockInclusivePrefix + blockAggregate;
+    myBlockFlag_ref.store(BlockStatus::PREFIX_READY, cuda::memory_order_release);
+
+    return prevBlockInclusivePrefix;
 }
 
 __global__ void ex5_deviceWideScan(const float* input, float* output,
