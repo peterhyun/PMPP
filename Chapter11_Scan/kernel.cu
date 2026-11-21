@@ -66,7 +66,13 @@ __global__ void ex4_vectorizedKoggeStone(const float* input, float* output,
     if (threadStart + E4_VALUES_PER_THREAD - 1 < N)
     {
         // When profiling, must check if this generates a vectorized load in ptx!!!
-        memcpy(items, input + threadStart, sizeof(float4));
+        //memcpy(items, input + threadStart, sizeof(float4));
+        // It didn't vectorize it, so gonna have to try this way
+        const float4 v = *reinterpret_cast<const float4*>(input + threadStart);
+        items[0] = v.x;
+        items[1] = v.y;
+        items[2] = v.z;
+        items[3] = v.w;
     }
     else
     {
@@ -111,7 +117,9 @@ __global__ void ex4_vectorizedKoggeStone(const float* input, float* output,
     if (threadStart + E4_VALUES_PER_THREAD - 1 < N)
     {
         // Check if vectorized
-        memcpy(output + threadStart, items, sizeof(float4));
+        //memcpy(output + threadStart, items, sizeof(float4));
+        float4 result = make_float4(items[0], items[1], items[2], items[3]);
+        *reinterpret_cast<float4*>(output + threadStart) = result;
     }
     else
     {
@@ -156,7 +164,6 @@ __device__ float ex5_interBlockScanDecoupled(
     float* blockAggregates,
     float* blockInclusivePrefixes,
     unsigned int* flags) {
-    // shared mem as all the threads in the block need to see this value, despite one leader thread of block is doing the update
     float prevBlockInclusivePrefix;
 
     // We can public blockAggregate info immediately

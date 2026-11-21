@@ -9,6 +9,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Chapter10_Reduction", "Chap
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Chapter11_Scan", "Chapter11_Scan\Chapter11_Scan.vcxproj", "{3A924C05-46C1-423B-A747-B03D84AB36A1}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Chapter12_Filter", "Chapter12_Filter\Chapter12_Filter.vcxproj", "{96A9B4A0-BF94-4FF1-AD47-920524382A5D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -27,6 +29,10 @@ Global
 		{3A924C05-46C1-423B-A747-B03D84AB36A1}.Debug|x64.Build.0 = Debug|x64
 		{3A924C05-46C1-423B-A747-B03D84AB36A1}.Release|x64.ActiveCfg = Release|x64
 		{3A924C05-46C1-423B-A747-B03D84AB36A1}.Release|x64.Build.0 = Release|x64
+		{96A9B4A0-BF94-4FF1-AD47-920524382A5D}.Debug|x64.ActiveCfg = Debug|x64
+		{96A9B4A0-BF94-4FF1-AD47-920524382A5D}.Debug|x64.Build.0 = Debug|x64
+		{96A9B4A0-BF94-4FF1-AD47-920524382A5D}.Release|x64.ActiveCfg = Release|x64
+		{96A9B4A0-BF94-4FF1-AD47-920524382A5D}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
