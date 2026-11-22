@@ -334,14 +334,14 @@ __global__ void ex4_coarsenedPrivatizedStableFilter(
     __shared__ BlockScan::TempStorage scanStorage;
     __shared__ int privateOutput[E4_TILE];
     __shared__ unsigned int logicalTileShared;
-    __shared__ int blockKeepCountShared;
     __shared__ int blockOffsetShared;
 
     const int tid = static_cast<int>(threadIdx.x);
     if (tid == 0) {
         logicalTileShared = atomicAdd(tileCounter, 1u);
-        blockKeepCountShared = 0;
+        /*
         blockOffsetShared = 0;
+        */
     }
     __syncthreads();
 
@@ -349,39 +349,65 @@ __global__ void ex4_coarsenedPrivatizedStableFilter(
     const int tileStart = static_cast<int>(tile) * E4_TILE;
     int values[E4_COARSENING_FACTOR] = {};
     int keeps[E4_COARSENING_FACTOR] = {};
-    int localOffsets[E4_COARSENING_FACTOR] = {};
-
-    (void)scanStorage;
-    (void)privateOutput;
-    (void)tid;
-    (void)tileStart;
-    (void)values;
-    (void)keeps;
-    (void)localOffsets;
-    (void)input;
-    (void)output;
-    (void)outputSize;
-    (void)N;
 
     // TODO 4.1: Load up to E4_COARSENING_FACTOR values per thread.
     //           You choose the per-thread index mapping; maintain
     //           each input element's ORIGINAL relative order.
+
+    // TODO: This is not a coalesced load, so need to profile if coalesced load + syncthreads() would be faster than this
+    int threadTotalKeepsCount = 0;
+    for (int i = 0; i < E4_COARSENING_FACTOR; i++)
+    {
+        int globalIdx = tileStart + tid * E4_COARSENING_FACTOR + i;
+        values[i] = (globalIdx < N) ? input[globalIdx] : 0;
+        keeps[i] = (globalIdx < N) ? passesCondition(values[i]) : 0;
+        if (keeps[i])
+        {
+            threadTotalKeepsCount++;
+        }
+    }
+
     // TODO 4.2: Evaluate keep flags and derive all LOCAL output offsets.
     //           Include the per-thread kept count in the block-wide scan.
+    int threadTotalKeepsCountExclusivePrefix = 0;
+    int blockAggregate = 0;
+    BlockScan(scanStorage).ExclusiveSum(threadTotalKeepsCount, threadTotalKeepsCountExclusivePrefix, blockAggregate);
+
     // TODO 4.3: Write retained values into privateOutput[] in stable order,
     //           and set blockKeepCountShared.
-    __syncthreads(); // All private writes must finish before a global flush.
+    int j = 0;
+    for (int i = 0; i < E4_COARSENING_FACTOR; i++)
+    {
+        if (keeps[i])
+        {
+            privateOutput[threadTotalKeepsCountExclusivePrefix + j] = values[i];
+            j++;
+        }
+    }
 
     if (tid == 0) {
         blockOffsetShared = unfinishedBlockExclusivePrefix(
-            blockKeepCountShared, tile, blockAggregates,
+            blockAggregate, tile, blockAggregates,
             blockInclusivePrefixes, blockStates);
     }
     __syncthreads();
 
     // TODO 4.4: Flush consecutive privateOutput[] elements to global output.
     //           Each thread may need to flush multiple packed elements.
+    for (int i = 0; i < E4_COARSENING_FACTOR; i++)
+    {
+        int privateOutputOffset = tid + i * E234_THREADS;
+        if (privateOutputOffset < blockAggregate)
+        {
+            output[blockOffsetShared + privateOutputOffset] = privateOutput[privateOutputOffset];
+        }
+    }
+
     // TODO 4.5: Write outputSize from the final logical tile.
+    if (tid == 0 && (tile == ((N - 1) / E4_TILE)))
+    {
+        *outputSize = blockOffsetShared + blockAggregate;
+    }
 }
 
 // ===============================================================
